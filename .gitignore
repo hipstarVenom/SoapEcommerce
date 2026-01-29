@@ -1,0 +1,16 @@
+# Ignore compiled Java files
+*.class
+
+# Ignore SOAP generated client code
+client/com/ecommerce/service/
+
+# Ignore wsimport generated files
+**/Get*Products*.java
+**/Get*Products*.class
+**/Get*ById*.java
+**/Get*ById*.class
+
+# Ignore IDE / OS junk
+.idea/
+.vscode/
+.DS_Store
