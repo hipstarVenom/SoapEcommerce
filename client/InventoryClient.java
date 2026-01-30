@@ -8,126 +8,265 @@ import com.sun.net.httpserver.HttpExchange;
 import java.io.*;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.*;
 
 public class InventoryClient {
 
-    // Stock maintained on web-server side
-    static Map<Integer, Integer> stockMap = new HashMap<>();
+    static final Map<Integer, Integer> stockMap = new HashMap<>();
+    static final Map<Integer, Integer> myInventory = new HashMap<>();
 
     public static void main(String[] args) throws Exception {
 
-        HttpServer server = HttpServer.create(
-                new InetSocketAddress(9000), 0);
+        HttpServer server = HttpServer.create(new InetSocketAddress(9000), 0);
 
-        // HOME PAGE – FETCH FROM SOAP & DISPLAY
-        server.createContext("/", exchange -> {
+        /* ================= STATIC IMAGES ================= */
+        server.createContext("/images", ex -> {
+            File file = new File("." + ex.getRequestURI().getPath());
+            if (!file.exists()) {
+                ex.sendResponseHeaders(404, -1);
+                return;
+            }
+            String type = Files.probeContentType(file.toPath());
+            ex.getResponseHeaders().set("Content-Type",
+                    type == null ? "image/jpeg" : type);
+            byte[] data = Files.readAllBytes(file.toPath());
+            ex.sendResponseHeaders(200, data.length);
+            ex.getResponseBody().write(data);
+            ex.close();
+        });
 
-            InventoryServiceService service =
-                    new InventoryServiceService();
+        /* ================= STORE PAGE ================= */
+        server.createContext("/", ex -> {
+
             InventoryService port =
-                    service.getInventoryServicePort();
-
+                    new InventoryServiceService().getInventoryServicePort();
             List<Product> products = port.getAllProducts();
 
-            // Initialize stock once
-            if (stockMap.isEmpty()) {
-                for (Product p : products) {
-                    stockMap.put(p.getId(), p.getStock());
+            synchronized (stockMap) {
+                if (stockMap.isEmpty()) {
+                    for (Product p : products)
+                        stockMap.put(p.getId(), p.getStock());
                 }
             }
 
             StringBuilder html = new StringBuilder();
-            html.append("<html><body style='font-family:Arial;text-align:center'>");
-            html.append("<h2>Product Menu</h2>");
+            html.append(header("Inventory Store"));
+
+            html.append("<div class='top'>")
+                .append("<h1>Inventory Store</h1>")
+                .append("<a class='btn' href='/my'>My Inventory</a>")
+                .append("</div>");
+
+            html.append("<div class='grid'>");
 
             for (Product p : products) {
-                int stock = stockMap.get(p.getId());
+                int stock = stockMap.getOrDefault(p.getId(), 0);
 
-                html.append("<div style='margin:15px'>")
-                    .append("<b>").append(p.getName()).append("</b>")
-                    .append(" | ").append(p.getPrice())
-                    .append(" | Stock: ").append(stock);
+                html.append("<div class='card'>")
+
+                    .append("<div class='product-img'>")
+                    .append("<img src='").append(productImage(p.getName())).append("'>")
+                    .append("</div>")
+
+                    .append("<h3>").append(escape(p.getName())).append("</h3>")
+                    .append("<p class='meta'>ID ").append(p.getId()).append("</p>")
+                    .append("<p>Price: ").append(p.getPrice()).append("</p>")
+                    .append("<p>Available: ").append(stock).append("</p>");
 
                 if (stock > 0) {
-                    html.append(" <a href='/order?pid=")
-                        .append(p.getId())
-                        .append("'>Order</a>");
+                    html.append("<form action='/order'>")
+                        .append("<input type='hidden' name='pid' value='").append(p.getId()).append("'>")
+                        .append("<input type='number' name='qty' min='1' value='1'>")
+                        .append("<button class='add'>Add</button>")
+                        .append("</form>");
                 } else {
-                    html.append(" <span style='color:red'>Out of Stock</span>");
+                    html.append("<p class='err'>Out of stock</p>");
                 }
 
                 html.append("</div>");
             }
 
-            html.append("</body></html>");
-
-            send(exchange, html.toString());
+            html.append("</div>");
+            html.append(footer());
+            send(ex, html.toString());
         });
 
-        // ORDER HANDLER
-        server.createContext("/order", exchange -> {
+        /* ================= ORDER ================= */
+        server.createContext("/order", ex -> {
 
-            Map<String, String> params =
-                    parseQuery(exchange.getRequestURI().getQuery());
+            Map<String, String> q = parse(ex.getRequestURI().getQuery());
+            int pid = parseInt(q.get("pid"));
+            int qty = Math.max(1, parseInt(q.get("qty")));
 
-            int pid = Integer.parseInt(params.get("pid"));
-            String response;
+            InventoryService port =
+                    new InventoryServiceService().getInventoryServicePort();
+            Product p = port.getProductById(pid);
 
-            if (!stockMap.containsKey(pid) || stockMap.get(pid) <= 0) {
-                response =
-                    "<html><body style='font-family:Arial;text-align:center'>" +
-                    "<h2 style='color:red'>Out of Stock</h2>" +
-                    "<a href='/'>Back</a>" +
-                    "</body></html>";
-            } else {
-
-                // Reduce stock
-                stockMap.put(pid, stockMap.get(pid) - 1);
-
-                InventoryServiceService service =
-                        new InventoryServiceService();
-                InventoryService port =
-                        service.getInventoryServicePort();
-
-                Product p = port.getProductById(pid);
-
-                response =
-                    "<html><body style='font-family:Arial;text-align:center'>" +
-                    "<h2>Order Successful</h2>" +
-                    "<p>Product: " + p.getName() + "</p>" +
-                    "<p>Price: " + p.getPrice() + "</p>" +
-                    "<p>Remaining Stock: " + stockMap.get(pid) + "</p>" +
-                    "<br><a href='/'>Back to Menu</a>" +
-                    "</body></html>";
+            if (p == null) {
+                send(ex, message("Product not found", "Unknown product", true));
+                return;
             }
 
-            send(exchange, response);
+            synchronized (stockMap) {
+                int available = stockMap.getOrDefault(pid, 0);
+                if (available < qty) {
+                    send(ex, message("Insufficient stock", p.getName(), true));
+                    return;
+                }
+                stockMap.put(pid, available - qty);
+                myInventory.put(pid,
+                        myInventory.getOrDefault(pid, 0) + qty);
+            }
+
+            send(ex, message("Added to inventory (Qty " + qty + ")", p.getName(), false));
+        });
+
+        /* ================= REMOVE ================= */
+        server.createContext("/remove", ex -> {
+
+            Map<String, String> q = parse(ex.getRequestURI().getQuery());
+            int pid = parseInt(q.get("pid"));
+
+            InventoryService port =
+                    new InventoryServiceService().getInventoryServicePort();
+            Product p = port.getProductById(pid);
+
+            synchronized (myInventory) {
+                int have = myInventory.getOrDefault(pid, 0);
+                if (have <= 0) {
+                    send(ex, message("Item not in inventory",
+                            p != null ? p.getName() : "Unknown", true));
+                    return;
+                }
+                myInventory.remove(pid);
+                stockMap.put(pid,
+                        stockMap.getOrDefault(pid, 0) + have);
+            }
+
+            send(ex, message("Removed from inventory",
+                    p != null ? p.getName() : "Unknown", false));
+        });
+
+        /* ================= MY INVENTORY ================= */
+        server.createContext("/my", ex -> {
+
+            InventoryService port =
+                    new InventoryServiceService().getInventoryServicePort();
+            StringBuilder html = new StringBuilder();
+            html.append(header("My Inventory"));
+
+            html.append("<div class='top'>")
+                .append("<h1>My Inventory</h1>")
+                .append("<a class='btn' href='/'>Back</a>")
+                .append("</div>");
+
+            html.append("<div class='grid'>");
+
+            if (myInventory.isEmpty()) {
+                html.append("<p class='empty'>No products added.</p>");
+            } else {
+                for (Map.Entry<Integer, Integer> e : myInventory.entrySet()) {
+                    Product p = port.getProductById(e.getKey());
+                    if (p == null) continue;
+
+                    html.append("<div class='card'>")
+
+                        .append("<div class='product-img'>")
+                        .append("<img src='").append(productImage(p.getName())).append("'>")
+                        .append("</div>")
+
+                        .append("<h3>").append(escape(p.getName())).append("</h3>")
+                        .append("<p>Quantity: ").append(e.getValue()).append("</p>")
+                        .append("<form action='/remove'>")
+                        .append("<input type='hidden' name='pid' value='").append(p.getId()).append("'>")
+                        .append("<button class='remove'>Remove</button>")
+                        .append("</form>")
+                        .append("</div>");
+                }
+            }
+
+            html.append("</div>");
+            html.append(footer());
+            send(ex, html.toString());
         });
 
         server.start();
-        System.out.println("Web server running at http://localhost:9000/");
+        System.out.println("Server running at http://localhost:9000/");
     }
 
-    // Utility to send HTML
-    private static void send(HttpExchange ex, String html) throws IOException {
-        ex.sendResponseHeaders(200, html.length());
-        ex.getResponseBody().write(html.getBytes());
+    /* ================= HELPERS ================= */
+
+    static String productImage(String name) {
+        if (name == null) return "/images/default.jpg";
+        name = name.toLowerCase();
+        if (name.contains("laptop")) return "/images/laptop.jpg";
+        if (name.contains("mobile")) return "/images/mobile.jpg";
+        if (name.contains("headphone")) return "/images/headphone.jpg";
+        return "/images/default.jpg";
+    }
+
+    static String message(String text, String product, boolean error) {
+        return header("Message") +
+            "<div class='msg'>" +
+            "<h2 class='" + (error ? "err" : "ok") + "'>" + escape(text) + "</h2>" +
+            "<p>" + escape(product) + "</p>" +
+            "<a class='btn' href='/'>Home</a> <a class='btn' href='/my'>My Inventory</a>" +
+            "</div>" +
+            footer();
+    }
+
+    static void send(HttpExchange ex, String html) throws IOException {
+        byte[] data = html.getBytes(StandardCharsets.UTF_8);
+        ex.getResponseHeaders().set("Content-Type", "text/html");
+        ex.sendResponseHeaders(200, data.length);
+        ex.getResponseBody().write(data);
         ex.close();
     }
 
-    // Parse URL params
-    private static Map<String, String> parseQuery(String query)
-            throws UnsupportedEncodingException {
-
+    static Map<String, String> parse(String q) throws UnsupportedEncodingException {
         Map<String, String> map = new HashMap<>();
-        if (query == null) return map;
-
-        for (String pair : query.split("&")) {
-            String[] parts = pair.split("=");
-            map.put(parts[0],
-                    URLDecoder.decode(parts[1], "UTF-8"));
+        if (q == null) return map;
+        for (String p : q.split("&")) {
+            String[] kv = p.split("=");
+            map.put(kv[0], kv.length > 1 ? URLDecoder.decode(kv[1], "UTF-8") : "");
         }
         return map;
+    }
+
+    static int parseInt(String s) {
+        try { return Integer.parseInt(s); } catch (Exception e) { return 0; }
+    }
+
+    static String escape(String s) {
+        return s == null ? "" :
+                s.replace("&","&amp;")
+                 .replace("<","&lt;")
+                 .replace(">","&gt;");
+    }
+
+    static String header(String title) {
+        return "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
+            + "<style>"
+            + "body{margin:0;font-family:Segoe UI,Arial;background:#f4f6f8}"
+            + ".top{display:flex;justify-content:space-between;align-items:center;padding:16px;background:#111;color:#fff}"
+            + ".btn{background:#0b69ff;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none}"
+            + ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;padding:16px}"
+            + ".card{background:#fff;border-radius:10px;padding:12px;box-shadow:0 3px 8px rgba(0,0,0,.08)}"
+            + ".product-img{width:100%;height:180px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;border-radius:8px;overflow:hidden}"
+            + ".product-img img{width:100%;height:100%;object-fit:contain}"
+            + "input{padding:6px;width:100%}"
+            + "button{padding:8px;border:none;border-radius:6px;cursor:pointer}"
+            + ".add{background:#28a745;color:#fff}"
+            + ".remove{background:#dc3545;color:#fff}"
+            + ".err{color:#dc3545}.ok{color:#28a745}"
+            + ".msg{text-align:center;padding:30px}"
+            + ".empty{text-align:center;padding:20px;color:#555}"
+            + "</style></head><body>";
+    }
+
+    static String footer() {
+        return "</body></html>";
     }
 }
