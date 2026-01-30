@@ -105,7 +105,7 @@ public class InventoryClient {
             Product p = port.getProductById(pid);
 
             if (p == null) {
-                send(ex, message("Product not found", "Unknown product", true));
+                send(ex, message("Product not found", "Unknown", true));
                 return;
             }
 
@@ -149,7 +149,7 @@ public class InventoryClient {
                     p != null ? p.getName() : "Unknown", false));
         });
 
-        /* ================= MY INVENTORY ================= */
+        /* ================= MY INVENTORY (GRID) ================= */
         server.createContext("/my", ex -> {
 
             InventoryService port =
@@ -159,7 +159,7 @@ public class InventoryClient {
 
             html.append("<div class='top'>")
                 .append("<h1>My Inventory</h1>")
-                .append("<a class='btn' href='/'>Back</a>")
+                .append("<a class='btn' href='/'>Back to Store</a>")
                 .append("</div>");
 
             html.append("<div class='grid'>");
@@ -178,11 +178,15 @@ public class InventoryClient {
                         .append("</div>")
 
                         .append("<h3>").append(escape(p.getName())).append("</h3>")
-                        .append("<p>Quantity: ").append(e.getValue()).append("</p>")
+                        .append("<p class='meta'>ID ").append(p.getId()).append("</p>")
+                        .append("<p>Price: ").append(p.getPrice()).append("</p>")
+                        .append("<p>Quantity Owned: ").append(e.getValue()).append("</p>")
+
                         .append("<form action='/remove'>")
                         .append("<input type='hidden' name='pid' value='").append(p.getId()).append("'>")
                         .append("<button class='remove'>Remove</button>")
                         .append("</form>")
+
                         .append("</div>");
                 }
             }
@@ -200,20 +204,33 @@ public class InventoryClient {
 
     static String productImage(String name) {
         if (name == null) return "/images/default.jpg";
-        name = name.toLowerCase();
-        if (name.contains("laptop")) return "/images/laptop.jpg";
-        if (name.contains("mobile")) return "/images/mobile.jpg";
-        if (name.contains("headphone")) return "/images/headphone.jpg";
+        String n = name.toLowerCase();
+
+        // ORDER MATTERS
+        if (n.contains("headphone") || n.contains("headset"))
+            return "/images/headphones.jpg";
+
+        if (n.contains("laptop"))
+            return "/images/laptop.jpg";
+
+        if (n.contains("mobile") || n.contains("phone"))
+            return "/images/mobile.jpg";
+
         return "/images/default.jpg";
     }
 
     static String message(String text, String product, boolean error) {
         return header("Message") +
-            "<div class='msg'>" +
+            "<div class='msg-card'>" +
+            "<div class='product-img msg-img'>" +
+            "<img src='" + productImage(product) + "'>" +
+            "</div>" +
             "<h2 class='" + (error ? "err" : "ok") + "'>" + escape(text) + "</h2>" +
             "<p>" + escape(product) + "</p>" +
-            "<a class='btn' href='/'>Home</a> <a class='btn' href='/my'>My Inventory</a>" +
-            "</div>" +
+            "<div class='actions'>" +
+            "<a class='btn' href='/'>Home</a>" +
+            "<a class='btn' href='/my'>My Inventory</a>" +
+            "</div></div>" +
             footer();
     }
 
@@ -247,23 +264,25 @@ public class InventoryClient {
     }
 
     static String header(String title) {
-        return "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            + "<style>"
-            + "body{margin:0;font-family:Segoe UI,Arial;background:#f4f6f8}"
-            + ".top{display:flex;justify-content:space-between;align-items:center;padding:16px;background:#111;color:#fff}"
-            + ".btn{background:#0b69ff;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none}"
-            + ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;padding:16px}"
-            + ".card{background:#fff;border-radius:10px;padding:12px;box-shadow:0 3px 8px rgba(0,0,0,.08)}"
-            + ".product-img{width:100%;height:180px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;border-radius:8px;overflow:hidden}"
-            + ".product-img img{width:100%;height:100%;object-fit:contain}"
-            + "input{padding:6px;width:100%}"
-            + "button{padding:8px;border:none;border-radius:6px;cursor:pointer}"
-            + ".add{background:#28a745;color:#fff}"
-            + ".remove{background:#dc3545;color:#fff}"
-            + ".err{color:#dc3545}.ok{color:#28a745}"
-            + ".msg{text-align:center;padding:30px}"
-            + ".empty{text-align:center;padding:20px;color:#555}"
-            + "</style></head><body>";
+        return "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>" +
+            "<style>" +
+            "body{margin:0;font-family:Segoe UI,Arial;background:#f4f6f8}" +
+            ".top{display:flex;justify-content:space-between;align-items:center;padding:16px;background:#111;color:#fff}" +
+            ".btn{background:#0b69ff;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none}" +
+            ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;padding:16px}" +
+            ".card{background:#fff;border-radius:10px;padding:12px;box-shadow:0 3px 8px rgba(0,0,0,.08)}" +
+            ".product-img{width:100%;height:180px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;border-radius:8px;overflow:hidden}" +
+            ".product-img img{width:100%;height:100%;object-fit:contain}" +
+            "input{padding:6px;width:100%}" +
+            "button{padding:8px;border:none;border-radius:6px;cursor:pointer}" +
+            ".add{background:#28a745;color:#fff}" +
+            ".remove{background:#dc3545;color:#fff}" +
+            ".err{color:#dc3545}.ok{color:#28a745}" +
+            ".msg-card{max-width:420px;margin:40px auto;background:#fff;padding:20px;border-radius:12px;text-align:center}" +
+            ".msg-img{height:200px;margin-bottom:12px}" +
+            ".actions{display:flex;justify-content:center;gap:12px;margin-top:16px}" +
+            ".empty{text-align:center;padding:20px;color:#555}" +
+            "</style></head><body>";
     }
 
     static String footer() {
